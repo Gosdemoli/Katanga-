@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Contador de Respiración</title>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .lucide { display: inline-block; vertical-align: middle; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+    
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        const Play = ({ size = 24 }) => (
+            <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polygon points="5 3 19 12 5 21 5 3"></polygon>
+            </svg>
+        );
+
+        const Pause = ({ size = 24 }) => (
+            <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="6" y="4" width="4" height="16"></rect>
+                <rect x="14" y="4" width="4" height="16"></rect>
+            </svg>
+        );
+
+        const RotateCcw = ({ size = 24 }) => (
+            <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="1 4 1 10 7 10"></polyline>
+                <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
+            </svg>
+        );
+
+        function BreathCounter() {
+          const [bpm, setBpm] = useState(60);
+          const [sessionMinutes, setSessionMinutes] = useState(5);
+          const [isRunning, setIsRunning] = useState(false);
+          const [beatCount, setBeatCount] = useState(0);
+          const [timeRemaining, setTimeRemaining] = useState(300);
+          const [currentPhaseIndex, setCurrentPhaseIndex] = useState(0);
+          const [currentPhaseBeat, setCurrentPhaseBeat] = useState(0);
+
+          const [phases, setPhases] = useState([
+            { name: 'Inhala', beats: 4, active: true },
+            { name: 'Descansa', beats: 4, active: true },
+            { name: 'Exhala', beats: 6, active: true },
+            { name: 'Descansa', beats: 2, active: true }
+          ]);
+          
+          const [availableVoices, setAvailableVoices] = useState([]);
+          const [selectedVoice, setSelectedVoice] = useState('');
+
+          const phaseOptions = ['Inhala', 'Exhala', 'Descansa', 'Retén'];
+
+          const audioContextRef = useRef(null);
+          const intervalRef = useRef(null);
+          const timerRef = useRef(null);
+          const phasesRef = useRef(phases);
+          const phaseIndexRef = useRef(0);
+          const phaseBeatRef = useRef(0);
+
+          useEffect(() => { phasesRef.current = phases; }, [phases]);
+
+          useEffect(() => {
+            const loadVoices = () => {
+              const voices = window.speechSynthesis.getVoices();
+              const spanishVoices = voices.filter(voice => voice.lang.startsWith('es'));
+              setAvailableVoices(spanishVoices);
+              if (spanishVoices.length > 0 && !selectedVoice) {
+                setSelectedVoice(spanishVoices[0].name);
+              }
+            };
+
+            loadVoices();
+            if (window.speechSynthesis.onvoiceschanged !== undefined) {
+              window.speechSynthesis.onvoiceschanged = loadVoices;
+            }
+          }, []);
+
+          const initAudio = () => {
+            if (!audioContextRef.current) {
+              audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            if (audioContextRef.current.state === 'suspended') audioContextRef.current.resume();
+          };
+
+          const vibrate = () => {
+            if ('vibrate' in navigator) {
+              navigator.vibrate(30);
+            }
+          };
+
+          const speak = (text) => {
+            if ('speechSynthesis' in window) {
+              const utterance = new SpeechSynthesisUtterance(text);
+              utterance.lang = 'es-ES';
+              utterance.rate = 0.4;
+              utterance.pitch = 0.8;
+              utterance.volume = 0.4;
+              
+              if (selectedVoice) {
+                const voice = availableVoices.find(v => v.name === selectedVoice);
+                if (voice) {
+                  utterance.voice = voice;
+                }
+              }
+              
+              window.speechSynthesis.speak(utterance);
+            }
+          };
+
+          const playMetronomeClick = (isHigh = false) => {
+            const ctx = audioContextRef.current;
+            if (!ctx) return;
+            const when = ctx.currentTime;
+
+            const master = ctx.createGain();
+            master.gain.setValueAtTime(1.0, when);
+
+            const dur = 0.06;
+            const buf = ctx.createBuffer(1, Math.ceil(ctx.sampleRate * dur), ctx.sampleRate);
+            const data = buf.getChannelData(0);
+            for (let i = 0; i < data.length; i++) {
+              data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (ctx.sampleRate * 0.01));
+            }
+            const noise = ctx.createBufferSource();
+            noise.buffer = buf;
+            const bp = ctx.createBiquadFilter();
+            bp.type = 'bandpass';
+            bp.frequency.setValueAtTime(isHigh ? 1700 : 1100, when);
+            bp.Q.setValueAtTime(8, when);
+            const nGain = ctx.createGain();
+            nGain.gain.setValueAtTime(1.0, when);
+
+            const ping = ctx.createOscillator();
+            ping.type = 'sine';
+            ping.frequency.setValueAtTime(isHigh ? 1200 : 800, when);
+            const pGain = ctx.createGain();
+            pGain.gain.setValueAtTime(0.0001, when);
+            pGain.gain.exponentialRampToValueAtTime(isHigh ? 0.5 : 0.4, when + 0.005);
+            pGain.gain.exponentialRampToValueAtTime(0.0001, when + 0.07);
+
+            noise.connect(bp); 
+            bp.connect(nGain);
+            nGain.connect(master);
+            ping.connect(pGain); 
+            pGain.connect(master);
+            master.connect(ctx.destination);
+
+            noise.start(when); noise.stop(when + dur);
+            ping.start(when); ping.stop(when + 0.09);
+
+            if (isHigh) vibrate();
+          };
+
+          const playGong = () => {
+            const ctx = audioContextRef.current; 
+            if (!ctx) return;
+            const when = ctx.currentTime;
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(220, when);
+            osc.frequency.exponentialRampToValueAtTime(110, when + 2.5);
+            gain.gain.setValueAtTime(0.0001, when);
+            gain.gain.exponentialRampToValueAtTime(0.3, when + 0.05);
+            gain.gain.exponentialRampToValueAtTime(0.0001, when + 2.8);
+            osc.connect(gain); 
+            gain.connect(ctx.destination);
+            osc.start(when); 
+            osc.stop(when + 3);
+            
+            if ('vibrate' in navigator) {
+              navigator.vibrate([100, 50, 100]);
+            }
+          };
+
+          const getActivePhases = () => phasesRef.current.filter(p => p.active);
+
+          useEffect(() => {
+            if (!isRunning) return;
+            const beatInterval = 60000 / bpm;
+
+            intervalRef.current = setInterval(() => {
+              const active = getActivePhases();
+              if (active.length === 0) return;
+
+              const phase = active[phaseIndexRef.current];
+              const isFirst = phaseBeatRef.current === 0;
+
+              playMetronomeClick(isFirst);
+              setBeatCount(prev => prev + 1);
+              setCurrentPhaseIndex(phaseIndexRef.current);
+              setCurrentPhaseBeat(phaseBeatRef.current);
+
+              if (isFirst) {
+                speak(phase.name);
+              }
+
+              phaseBeatRef.current += 1;
+              if (phaseBeatRef.current >= phase.beats) {
+                phaseBeatRef.current = 0;
+                phaseIndexRef.current = (phaseIndexRef.current + 1) % active.length;
+              }
+            }, beatInterval);
+
+            timerRef.current = setInterval(() => {
+              setTimeRemaining(prev => {
+                if (prev <= 1) { 
+                  setIsRunning(false); 
+                  playGong(); 
+                  return 0; 
+                }
+                return prev - 1;
+              });
+            }, 1000);
+
+            return () => {
+              clearInterval(intervalRef.current);
+              clearInterval(timerRef.current);
+            };
+          }, [isRunning, bpm]);
+
+          const handleStart = () => {
+            const active = getActivePhases();
+            if (active.length === 0) { 
+              alert('Activa al menos una fase'); 
+              return; 
+            }
+            initAudio();
+
+            phaseIndexRef.current = 0; 
+            phaseBeatRef.current = 0;
+            setCurrentPhaseIndex(0); 
+            setCurrentPhaseBeat(0);
+
+            playMetronomeClick(true);
+            setBeatCount(prev => prev + 1);
+            phaseBeatRef.current = 1; 
+            setCurrentPhaseBeat(1);
+
+            speak(active[0].name);
+
+            setIsRunning(true);
+          };
+
+          const handlePause = () => {
+            setIsRunning(false);
+            clearInterval(intervalRef.current);
+            clearInterval(timerRef.current);
+          };
+
+          const handleReset = () => {
+            setIsRunning(false);
+            clearInterval(intervalRef.current);
+            clearInterval(timerRef.current);
+            setBeatCount(0);
+            setTimeRemaining(sessionMinutes * 60);
+            setCurrentPhaseIndex(0);
+            setCurrentPhaseBeat(0);
+            phaseIndexRef.current = 0; 
+            phaseBeatRef.current = 0;
+          };
+
+          const updatePhase = (index, field, value) => {
+            const newPhases = [...phasesRef.current];
+            newPhases[index][field] = value;
+            setPhases(newPhases);
+          };
+
+          const formatTime = (seconds) => {
+            const mins = Math.floor(seconds / 60);
+            const secs = seconds % 60;
+            return `${mins}:${secs.toString().padStart(2, '0')}`;
+          };
+
+          const activePhases = getActivePhases();
+          const currentActivePhase = activePhases[currentPhaseIndex];
+
+          return (
+            <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4 sm:p-8">
+              <div className="max-w-4xl mx-auto">
+                <h1 className="text-2xl sm:text-4xl font-bold text-center text-indigo-900 mb-4 sm:mb-8">Contador de Respiración</h1>
+
+                <div className="bg-white rounded-lg shadow-lg p-4 sm:p-6 mb-4 sm:mb-6">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-6">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">BPM (Beats por minuto)</label>
+                      <input 
+                        type="number" 
+                        value={bpm} 
+                        onChange={(e) => setBpm(Number(e.target.value))} 
+                        disabled={isRunning} 
+                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent disabled:bg-gray-100 text-base" 
+                        min="1" 
+                        max="200" 
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">Duración sesión (minutos)</label>
+                      <input 
+                        type="number" 
+                        value={sessionMinutes} 
+                        onChange={(e) => { 
+                          const mins = Number(e.target.value); 
+                          setSessionMinutes(mins); 
+                          if (!isRunning) setTimeRemaining(mins * 60); 
+                        }} 
+                        disabled={isRunning} 
+                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent disabled:bg-gray-100 text-base" 
+                        min="1" 
+                        max="60" 
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="block text-sm font-medium text-gray-700 mb-2">Voz</label>
+                      <select
+                        value={selectedVoice}
+                        onChange={(e) => setSelectedVoice(e.target.value)}
+                        disabled={isRunning}
+                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent disabled:bg-gray-100 text-base"
+                      >
+                        {availableVoices.map(voice => (
+                          <option key={voice.name} value={voice.name}>
+                            {voice.name} ({voice.lang})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4 mb-4 sm:mb-6">
+                  {phases.map((phase, index) => (
+                    <div 
+                      key={index} 
+                      className={`bg-white rounded-lg shadow-lg p-4 transition-all ${
+                        isRunning && currentActivePhase && currentActivePhase.name === phase.name 
+                          ? 'ring-4 ring-indigo-400 scale-105' 
+                          : ''
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-3">
+                        <select
+                          value={phase.name}
+                          onChange={(e) => updatePhase(index, 'name', e.target.value)}
+                          disabled={isRunning}
+                          className="text-base sm:text-lg font-semibold text-gray-800 bg-transparent border-none focus:outline-none focus:ring-2 focus:ring-indigo-500 rounded px-1 disabled:opacity-50"
+                        >
+                          {phaseOptions.map(option => (
+                            <option key={option} value={option}>{option}</option>
+                          ))}
+                        </select>
+                        <label className="flex items-center cursor-pointer">
+                          <input 
+                            type="checkbox" 
+                            checked={phase.active} 
+                            onChange={(e) => updatePhase(index, 'active', e.target.checked)} 
+                            disabled={isRunning} 
+                            className="w-5 h-5 text-indigo-600 rounded focus:ring-2 focus:ring-indigo-500" 
+                          />
+                        </label>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <label className="text-sm text-gray-600">Beats:</label>
+                        <input 
+                          type="number" 
+                          value={phase.beats} 
+                          onChange={(e) => updatePhase(index, 'beats', Number(e.target.value))} 
+                          disabled={isRunning} 
+                          className="w-20 px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-100 text-base" 
+                          min="1" 
+                          max="20" 
+                        />
+                      </div>
+                      {isRunning && currentActivePhase && currentActivePhase.name === phase.name && (
+                        <div className="mt-3 text-sm text-indigo-600 font-medium">
+                          Beat {currentPhaseBeat + 1} de {phase.beats}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+
+                <div className="bg-white rounded-lg shadow-lg p-4 sm:p-6 mb-4 sm:mb-6">
+                  <div className="grid grid-cols-3 gap-2 sm:gap-4 text-center">
+                    <div>
+                      <div className="text-xs sm:text-sm text-gray-600 mb-1">Tiempo restante</div>
+                      <div className="text-xl sm:text-3xl font-bold text-indigo-900">{formatTime(timeRemaining)}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs sm:text-sm text-gray-600 mb-1">Total beats</div>
+                      <div className="text-xl sm:text-3xl font-bold text-indigo-900">{beatCount}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs sm:text-sm text-gray-600 mb-1">Fase actual</div>
+                      <div className="text-base sm:text-xl font-bold text-indigo-900">
+                        {isRunning && currentActivePhase ? currentActivePhase.name : '-'}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex flex-col sm:flex-row justify-center gap-3 sm:gap-4">
+                  {!isRunning ? (
+                    <button 
+                      onClick={handleStart} 
+                      className="flex items-center justify-center gap-2 px-6 sm:px-8 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 active:bg-indigo-800 transition-colors shadow-lg text-base sm:text-lg"
+                    >
+                      <Play size={20} />
+                      Iniciar
+                    </button>
+                  ) : (
+                    <button 
+                      onClick={handlePause} 
+                      className="flex items-center justify-center gap-2 px-6 sm:px-8 py-3 bg-amber-600 text-white rounded-lg hover:bg-amber-700 active:bg-amber-800 transition-colors shadow-lg text-base sm:text-lg"
+                    >
+                      <Pause size={20} />
+                      Pausar
+                    </button>
+                  )}
+                  <button 
+                    onClick={handleReset} 
+                    className="flex items-center justify-center gap-2 px-6 sm:px-8 py-3 bg-gray-600 text-white rounded-lg hover:bg-gray-700 active:bg-gray-800 transition-colors shadow-lg text-base sm:text-lg"
+                  >
+                    <RotateCcw size={20} />
+                    Reiniciar
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        }
+
+        ReactDOM.render(<BreathCounter />, document.getElementById('root'));
+    </script>
+</body>
+</html>
